@@ -10,10 +10,10 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, id }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    mermaid.initialize({ 
+    mermaid.initialize({
       startOnLoad: false,
       theme: 'default',
-      securityLevel: 'loose',
+      securityLevel: 'strict',
       fontFamily: 'Inter',
     });
     
