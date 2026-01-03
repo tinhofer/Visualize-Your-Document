@@ -21,7 +21,7 @@ interface ChartProps {
   color?: string;
 }
 
-export const SimpleChart: React.FC<ChartProps> = ({ data, type, xAxisLabel, yAxisLabel, color = "#6366f1" }) => {
+export const SimpleChart: React.FC<ChartProps> = React.memo(({ data, type, xAxisLabel, yAxisLabel, color = "#6366f1" }) => {
   const CommonComponents = () => (
     <>
       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
@@ -78,4 +78,4 @@ export const SimpleChart: React.FC<ChartProps> = ({ data, type, xAxisLabel, yAxi
       </BarChart>
     </ResponsiveContainer>
   );
-};
+});

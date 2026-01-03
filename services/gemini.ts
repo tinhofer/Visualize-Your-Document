@@ -1,6 +1,13 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { AppConfig, FileData, GeneratedContent, FileType, VisualType, Orientation } from '../types';
 import { retryWithBackoff, APIKeyError, GenerationError, NetworkError } from './apiUtils';
+import {
+  GEMINI_MODEL_ANALYSIS,
+  GEMINI_MODEL_IMAGE,
+  MAX_API_RETRIES,
+  IMAGE_GENERATION_RETRIES,
+  ASPECT_RATIOS,
+} from '../constants';
 
 // Define the response schema strictly
 const responseSchema: Schema = {
@@ -69,18 +76,18 @@ const generateImage = async (prompt: string, orientation: Orientation): Promise<
   if (!process.env.API_KEY) return undefined;
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const aspectRatio = orientation === Orientation.LANDSCAPE ? "16:9" : "3:4";
+  const aspectRatio = orientation === Orientation.LANDSCAPE ? ASPECT_RATIOS.landscape : ASPECT_RATIOS.portrait;
 
   try {
     const response = await retryWithBackoff(async () => {
       return await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
+        model: GEMINI_MODEL_IMAGE,
         contents: { parts: [{ text: prompt }] },
         config: {
           imageConfig: { aspectRatio }
         }
       });
-    }, 2); // Only 2 retries for image generation
+    }, IMAGE_GENERATION_RETRIES);
 
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
@@ -104,7 +111,6 @@ export const generateInfographics = async (
   }
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const modelId = "gemini-2.5-flash"; // Efficient for analysis
 
   // Construct prompt based on config
   const visualsRequested = config.selectedVisuals.join(", ");
@@ -154,7 +160,7 @@ export const generateInfographics = async (
   try {
     const response = await retryWithBackoff(async () => {
       return await ai.models.generateContent({
-        model: modelId,
+        model: GEMINI_MODEL_ANALYSIS,
         contents: { parts },
         config: {
           responseMimeType: "application/json",
@@ -162,7 +168,7 @@ export const generateInfographics = async (
           systemInstruction: "You are a professional data analyst and visualization expert."
         }
       });
-    }, 3); // 3 retries for content generation
+    }, MAX_API_RETRIES);
 
     const text = response.text;
     if (!text || text.trim() === '') {
