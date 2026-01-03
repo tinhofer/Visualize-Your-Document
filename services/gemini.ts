@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { AppConfig, FileData, GeneratedContent, FileType, VisualType, Orientation } from '../types';
+import { retryWithBackoff, APIKeyError, GenerationError, NetworkError } from './apiUtils';
 
 // Define the response schema strictly
 const responseSchema: Schema = {
@@ -66,26 +67,29 @@ const responseSchema: Schema = {
 
 const generateImage = async (prompt: string, orientation: Orientation): Promise<string | undefined> => {
   if (!process.env.API_KEY) return undefined;
-  
+
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const aspectRatio = orientation === Orientation.LANDSCAPE ? "16:9" : "3:4";
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: prompt }] },
-      config: {
-        imageConfig: { aspectRatio }
-      }
-    });
+    const response = await retryWithBackoff(async () => {
+      return await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: { parts: [{ text: prompt }] },
+        config: {
+          imageConfig: { aspectRatio }
+        }
+      });
+    }, 2); // Only 2 retries for image generation
 
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
         return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
       }
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error("Image generation failed:", error);
+    // Don't throw - illustration is optional
   }
   return undefined;
 };
@@ -94,9 +98,9 @@ export const generateInfographics = async (
   file: FileData,
   config: AppConfig
 ): Promise<GeneratedContent> => {
-  
+
   if (!process.env.API_KEY) {
-    throw new Error("API Key is missing. Please check your environment configuration.");
+    throw new APIKeyError("Gemini API key is missing. Please add GEMINI_API_KEY to your .env.local file.");
   }
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -148,20 +152,35 @@ export const generateInfographics = async (
   }
 
   try {
-    const response = await ai.models.generateContent({
-      model: modelId,
-      contents: { parts },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        systemInstruction: "You are a professional data analyst and visualization expert."
-      }
-    });
+    const response = await retryWithBackoff(async () => {
+      return await ai.models.generateContent({
+        model: modelId,
+        contents: { parts },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: responseSchema,
+          systemInstruction: "You are a professional data analyst and visualization expert."
+        }
+      });
+    }, 3); // 3 retries for content generation
 
     const text = response.text;
-    if (!text) throw new Error("No response generated");
+    if (!text || text.trim() === '') {
+      throw new GenerationError("Gemini returned an empty response. The document might be empty or unreadable.");
+    }
 
-    const parsedContent = JSON.parse(text) as GeneratedContent;
+    let parsedContent: GeneratedContent;
+    try {
+      parsedContent = JSON.parse(text) as GeneratedContent;
+    } catch (parseError) {
+      console.error("Failed to parse Gemini response:", text);
+      throw new GenerationError("Failed to parse AI response. Please try again.");
+    }
+
+    // Validate that we got some useful content
+    if (!parsedContent.charts && !parsedContent.diagrams && !parsedContent.keywords) {
+      throw new GenerationError("No visualizations could be generated from the document. It may not contain suitable data.");
+    }
 
     // If illustration was requested and we got a prompt, generate the image
     if (config.selectedVisuals.includes(VisualType.ILLUSTRATION) && (parsedContent as any).illustrationPrompt) {
@@ -174,8 +193,30 @@ export const generateInfographics = async (
 
     return parsedContent;
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Gemini Generation Error:", error);
-    throw error;
+
+    // Re-throw custom errors as-is
+    if (error instanceof APIKeyError || error instanceof GenerationError) {
+      throw error;
+    }
+
+    // Handle network/API errors
+    if (error.message?.includes('fetch') || error.message?.includes('network')) {
+      throw new NetworkError("Network error. Please check your internet connection and try again.");
+    }
+
+    // Handle API key errors
+    if (error.message?.includes('API key') || error.message?.includes('401') || error.message?.includes('403')) {
+      throw new APIKeyError("Invalid Gemini API key. Please check your .env.local file.");
+    }
+
+    // Handle rate limiting
+    if (error.message?.includes('429') || error.message?.includes('quota') || error.message?.includes('rate limit')) {
+      throw new GenerationError("API rate limit exceeded. Please wait a moment and try again.");
+    }
+
+    // Generic error
+    throw new GenerationError(error.message || "Failed to generate visualizations. Please try again.");
   }
 };

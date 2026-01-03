@@ -5,12 +5,13 @@ import {
   Layout, Maximize2, Minimize2
 } from 'lucide-react';
 
-import { 
-  AppConfig, FileData, GeneratedContent, 
-  OutputFormat, VisualType, Orientation, FileType 
+import {
+  AppConfig, FileData, GeneratedContent,
+  OutputFormat, VisualType, Orientation, FileType
 } from './types';
 import { getFileType, readFileAsBase64, readFileAsText } from './services/fileUtils';
 import { generateInfographics } from './services/gemini';
+import { FileSizeError } from './services/apiUtils';
 
 import { SimpleChart } from './components/Charts';
 import Mermaid from './components/Mermaid';
@@ -24,10 +25,14 @@ const Steps = {
   RESULTS: 3
 };
 
+// Maximum file size: 20MB (Gemini API limit is typically around 20MB for documents)
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
+
 const App: React.FC = () => {
   const [step, setStep] = useState(Steps.UPLOAD);
   const [file, setFile] = useState<FileData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
   
   // Configuration State
   const [config, setConfig] = useState<AppConfig>({
@@ -43,14 +48,30 @@ const App: React.FC = () => {
     if (e.target.files && e.target.files[0]) {
       const uploadedFile = e.target.files[0];
       const type = getFileType(uploadedFile);
-      
+
+      // Validate file type
       if (type === FileType.UNKNOWN) {
         setError("Unsupported file format. Please upload PDF, DOCX, PPTX, or TXT.");
         return;
       }
 
+      // Validate file size
+      if (uploadedFile.size > MAX_FILE_SIZE) {
+        const sizeMB = (uploadedFile.size / (1024 * 1024)).toFixed(2);
+        const maxSizeMB = (MAX_FILE_SIZE / (1024 * 1024)).toFixed(0);
+        setError(`File size (${sizeMB}MB) exceeds maximum limit of ${maxSizeMB}MB. Please upload a smaller file.`);
+        return;
+      }
+
+      // Validate non-empty file
+      if (uploadedFile.size === 0) {
+        setError("File is empty. Please upload a valid document.");
+        return;
+      }
+
       setError(null);
-      
+      setUploadingFile(true);
+
       try {
         let base64 = "";
         let rawText = "";
@@ -58,8 +79,13 @@ const App: React.FC = () => {
         // Read file based on type
         if (type === FileType.TXT) {
           rawText = await readFileAsText(uploadedFile);
-        } 
-        
+
+          // Validate text content
+          if (!rawText || rawText.trim().length === 0) {
+            throw new Error("Text file is empty or contains no readable content.");
+          }
+        }
+
         // Always get base64 for API transmission if needed (e.g. PDF/DOCX as blobs)
         // Note: For TXT we send text directly in prompt, but base64 is harmless to store
         base64 = await readFileAsBase64(uploadedFile);
@@ -71,8 +97,11 @@ const App: React.FC = () => {
           rawText
         });
         setStep(Steps.CONFIG);
-      } catch (err) {
-        setError("Failed to read file. Please try again.");
+      } catch (err: any) {
+        console.error("File reading error:", err);
+        setError(err.message || "Failed to read file. The file might be corrupted or password-protected.");
+      } finally {
+        setUploadingFile(false);
       }
     }
   };
@@ -118,18 +147,28 @@ const App: React.FC = () => {
   const renderUploadStep = () => (
     <div className="flex flex-col items-center justify-center p-12 border-2 border-dashed border-slate-300 rounded-3xl bg-slate-50 hover:bg-slate-100 transition-colors">
       <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mb-6">
-        <Upload size={32} />
+        {uploadingFile ? <Loader2 className="animate-spin" size={32} /> : <Upload size={32} />}
       </div>
-      <h2 className="text-xl font-semibold text-slate-800 mb-2">Upload your Document</h2>
+      <h2 className="text-xl font-semibold text-slate-800 mb-2">
+        {uploadingFile ? "Processing File..." : "Upload your Document"}
+      </h2>
       <p className="text-slate-500 mb-8 text-center max-w-md">
-        Supports PDF, DOCX, PPTX, and TXT files. We'll analyze the content to generate visual insights.
+        {uploadingFile
+          ? "Reading and validating your file..."
+          : "Supports PDF, DOCX, PPTX, and TXT files (max 20MB). We'll analyze the content to generate visual insights."}
       </p>
-      
-      <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 px-8 rounded-xl shadow-lg shadow-indigo-200 transition-all transform hover:-translate-y-0.5">
-        <span>Choose File</span>
-        <input type="file" className="hidden" accept=".pdf,.docx,.pptx,.txt" onChange={handleFileChange} />
+
+      <label className={`${uploadingFile ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 px-8 rounded-xl shadow-lg shadow-indigo-200 transition-all transform hover:-translate-y-0.5`}>
+        <span>{uploadingFile ? "Processing..." : "Choose File"}</span>
+        <input
+          type="file"
+          className="hidden"
+          accept=".pdf,.docx,.pptx,.txt"
+          onChange={handleFileChange}
+          disabled={uploadingFile}
+        />
       </label>
-      
+
       {error && (
         <div className="mt-6 flex items-center gap-2 text-red-600 bg-red-50 px-4 py-2 rounded-lg">
           <AlertCircle size={16} />
