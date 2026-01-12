@@ -6,14 +6,14 @@ interface MermaidProps {
   id: string;
 }
 
-const Mermaid: React.FC<MermaidProps> = ({ chart, id }) => {
+const Mermaid: React.FC<MermaidProps> = React.memo(({ chart, id }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    mermaid.initialize({ 
+    mermaid.initialize({
       startOnLoad: false,
       theme: 'default',
-      securityLevel: 'loose',
+      securityLevel: 'strict',
       fontFamily: 'Inter',
     });
     
@@ -36,6 +36,8 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, id }) => {
   }, [chart, id]);
 
   return <div ref={containerRef} className="w-full flex justify-center items-center overflow-x-auto p-4" />;
-};
+});
+
+Mermaid.displayName = 'Mermaid';
 
 export default Mermaid;
