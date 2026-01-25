@@ -1,5 +1,13 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { AppConfig, FileData, GeneratedContent, FileType, VisualType, Orientation } from '../types';
+import { 
+  AppConfig, 
+  FileData, 
+  GeneratedContent, 
+  GeminiAnalysisResponse,
+  FileType, 
+  VisualType, 
+  Orientation 
+} from '../types';
 import { retryWithBackoff, APIKeyError, GenerationError, NetworkError } from './apiUtils';
 import {
   GEMINI_MODEL_ANALYSIS,
@@ -67,6 +75,96 @@ const responseSchema: Schema = {
     illustrationPrompt: {
       type: Type.STRING,
       description: "A detailed, artistic prompt to generate a high-quality illustration representing the document's core theme."
+    },
+    // NEW: Tables
+    tables: {
+      type: Type.ARRAY,
+      description: "Structured data presented as tables",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          title: { type: Type.STRING },
+          description: { type: Type.STRING },
+          headers: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING }
+          },
+          rows: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            }
+          }
+        },
+        required: ["title", "headers", "rows"]
+      }
+    },
+    // NEW: Timelines
+    timelines: {
+      type: Type.ARRAY,
+      description: "Chronological events or processes",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          title: { type: Type.STRING },
+          description: { type: Type.STRING },
+          events: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                date: { type: Type.STRING, description: "Date, year, or time period" },
+                title: { type: Type.STRING },
+                description: { type: Type.STRING }
+              },
+              required: ["date", "title", "description"]
+            }
+          }
+        },
+        required: ["title", "events"]
+      }
+    },
+    // NEW: Highlight Boxes (Key Facts)
+    highlightBoxes: {
+      type: Type.ARRAY,
+      description: "Important facts, quotes, warnings, or tips to highlight",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          type: { type: Type.STRING, enum: ["fact", "quote", "warning", "tip"] },
+          title: { type: Type.STRING },
+          content: { type: Type.STRING },
+          source: { type: Type.STRING, description: "Source attribution for quotes (optional)" }
+        },
+        required: ["type", "title", "content"]
+      }
+    },
+    // NEW: Icon Grids (Pictograms)
+    iconGrids: {
+      type: Type.ARRAY,
+      description: "Key metrics or concepts visualized with icons",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          title: { type: Type.STRING },
+          description: { type: Type.STRING },
+          items: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                icon: { type: Type.STRING, description: "Lucide icon name in kebab-case (e.g., 'users', 'clock', 'chart-bar', 'file-text')" },
+                label: { type: Type.STRING },
+                value: { type: Type.STRING, description: "Numeric value or short text" },
+                description: { type: Type.STRING }
+              },
+              required: ["icon", "label"]
+            }
+          }
+        },
+        required: ["title", "items"]
+      }
     }
   },
   required: ["charts", "diagrams", "keywords"]
@@ -115,18 +213,31 @@ export const generateInfographics = async (
   // Construct prompt based on config
   const visualsRequested = config.selectedVisuals.join(", ");
   const prompt = `
-    Analyze the provided document. 
-    The user wants to generate the following visual elements: ${visualsRequested}.
+    Analyze the provided document and generate visualizations.
+    The user wants these visual elements: ${visualsRequested}.
     
-    1. Extract key quantitative data for charts (Bar or Line).
-    2. Identify structural relationships for diagrams (Flowcharts or Mind Maps) and return them as Mermaid JS code.
-    3. Extract key concepts and their relative importance for a data visualization. Keep concept names short (1-3 words) for better visualization.
-    4. Provide a summary if requested.
-    5. If 'Illustration' is requested, write a creative, detailed prompt (approx 40-50 words) describing a high-quality, modern digital illustration that conceptually represents the main topic of the document for a presentation slide. Store this in 'illustrationPrompt'.
+    Generate ONLY the requested types. Follow these guidelines:
     
-    Return a JSON object strictly following the schema.
-    For Mermaid diagrams, ensure the syntax is valid and direction is usually TD or LR. 
-    For Mind Maps in mermaid, use 'mindmap' syntax.
+    **Text-based:**
+    - Summary: Concise executive summary (2-3 sentences)
+    - Key Facts: Extract 3-5 important facts, quotes, warnings, or tips as highlightBoxes
+    
+    **Charts & Data:**
+    - Bar Chart / Line Graph: Extract quantitative data with proper axis labels
+    - Table: Structure comparative or tabular data with clear headers
+    
+    **Diagrams:**
+    - Flowchart: Use Mermaid 'flowchart TD' or 'flowchart LR' syntax
+    - Mind Map: Use Mermaid 'mindmap' syntax
+    - Timeline: Extract chronological events with dates/periods
+    
+    **Visuals:**
+    - Keyword Cloud: Extract 8-15 key concepts with importance scores (1-100)
+    - AI Illustration: Write a creative prompt (40-50 words) for illustrationPrompt
+    - Pictograms: Create iconGrids with 4-8 key metrics using Lucide icon names
+      (e.g., 'users', 'clock', 'file-text', 'chart-bar', 'dollar-sign', 'percent')
+    
+    Return valid JSON matching the schema. For Mermaid, ensure valid syntax.
   `;
 
   let parts: any[] = [];
@@ -175,9 +286,9 @@ export const generateInfographics = async (
       throw new GenerationError("Gemini returned an empty response. The document might be empty or unreadable.");
     }
 
-    let parsedContent: GeneratedContent;
+    let parsedContent: GeminiAnalysisResponse;
     try {
-      parsedContent = JSON.parse(text) as GeneratedContent;
+      parsedContent = JSON.parse(text) as GeminiAnalysisResponse;
     } catch (parseError) {
       console.error("Failed to parse Gemini response:", text);
       throw new GenerationError("Failed to parse AI response. Please try again.");
@@ -188,16 +299,28 @@ export const generateInfographics = async (
       throw new GenerationError("No visualizations could be generated from the document. It may not contain suitable data.");
     }
 
+    // Build the final result with proper typing
+    const result: GeneratedContent = {
+      summary: parsedContent.summary,
+      charts: parsedContent.charts ?? [],
+      diagrams: parsedContent.diagrams ?? [],
+      keywords: parsedContent.keywords ?? [],
+      // New visualization types
+      tables: parsedContent.tables ?? [],
+      timelines: parsedContent.timelines ?? [],
+      highlightBoxes: parsedContent.highlightBoxes ?? [],
+      iconGrids: parsedContent.iconGrids ?? [],
+    };
+
     // If illustration was requested and we got a prompt, generate the image
-    if (config.selectedVisuals.includes(VisualType.ILLUSTRATION) && (parsedContent as any).illustrationPrompt) {
-      const illustrationPrompt = (parsedContent as any).illustrationPrompt;
-      const illustrationBase64 = await generateImage(illustrationPrompt, config.orientation);
+    if (config.selectedVisuals.includes(VisualType.ILLUSTRATION) && parsedContent.illustrationPrompt) {
+      const illustrationBase64 = await generateImage(parsedContent.illustrationPrompt, config.orientation);
       if (illustrationBase64) {
-        parsedContent.illustration = illustrationBase64;
+        result.illustration = illustrationBase64;
       }
     }
 
-    return parsedContent;
+    return result;
 
   } catch (error: any) {
     console.error("Gemini Generation Error:", error);
